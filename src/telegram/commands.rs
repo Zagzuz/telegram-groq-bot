@@ -45,10 +45,10 @@ fn parse_command(text: &str, bot_username: &str) -> Option<(WorkKind, Option<Str
 
     let mut command_parts = command_token.splitn(2, '@');
     let command = command_parts.next()?.to_ascii_lowercase();
-    if let Some(target) = command_parts.next()
-        && !target.eq_ignore_ascii_case(bot_username)
-    {
-        return None;
+    if let Some(target) = command_parts.next() {
+        if !target.eq_ignore_ascii_case(bot_username) {
+            return None;
+        }
     }
 
     let kind = match command.as_str() {

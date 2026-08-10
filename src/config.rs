@@ -64,7 +64,7 @@ impl Config {
             auto_register_webhook: optional("AUTO_REGISTER_WEBHOOK", false)?,
             system_prompt: value_or(
                 "SYSTEM_PROMPT",
-                "You are a helpful assistant in a Telegram group. Answer clearly, accurately, and concisely. Do not claim access to current information or tools that you do not have.",
+                "You are a helpful assistant in a Telegram group. Answer clearly, accurately, and concisely. Format responses using GitHub-flavored Markdown supported by Telegram rich messages. Use headings sparingly. Do not claim access to current information or tools that you do not have.",
             ),
             port: optional("PORT", 8080_u16)?,
             context_max_messages: optional("CONTEXT_MAX_MESSAGES", 12_i64)?,

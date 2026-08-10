@@ -52,13 +52,13 @@ impl TelegramClient {
         reply_to_message_id: Option<i64>,
         text: &str,
     ) -> anyhow::Result<()> {
-        let request = SendMessageRequest {
+        let request = SendRichMessageRequest {
             chat_id,
             message_thread_id: thread_id,
-            text,
+            rich_message: InputRichMessage { markdown: text },
             reply_parameters: reply_to_message_id.map(|message_id| ReplyParameters { message_id }),
         };
-        let _: serde_json::Value = self.post("sendMessage", &request).await?;
+        let _: serde_json::Value = self.post("sendRichMessage", &request).await?;
         Ok(())
     }
 
@@ -130,13 +130,18 @@ struct SetWebhookRequest<'a> {
 }
 
 #[derive(Debug, Serialize)]
-struct SendMessageRequest<'a> {
+struct SendRichMessageRequest<'a> {
     chat_id: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     message_thread_id: Option<i64>,
-    text: &'a str,
+    rich_message: InputRichMessage<'a>,
     #[serde(skip_serializing_if = "Option::is_none")]
     reply_parameters: Option<ReplyParameters>,
+}
+
+#[derive(Debug, Serialize)]
+struct InputRichMessage<'a> {
+    markdown: &'a str,
 }
 
 #[derive(Debug, Serialize)]
@@ -217,5 +222,20 @@ mod tests {
         let chunks = split_message(&"a".repeat(10), 4, 2);
         assert_eq!(chunks, vec!["aaaa", "aaa…"]);
         assert!(chunks.iter().all(|chunk| chunk.chars().count() <= 4));
+    }
+
+    #[test]
+    fn serializes_rich_markdown_delivery() {
+        let request = SendRichMessageRequest {
+            chat_id: 42,
+            message_thread_id: None,
+            rich_message: InputRichMessage {
+                markdown: "**bold**",
+            },
+            reply_parameters: Some(ReplyParameters { message_id: 7 }),
+        };
+        let value = serde_json::to_value(request).unwrap();
+        assert_eq!(value["rich_message"]["markdown"], "**bold**");
+        assert_eq!(value["reply_parameters"]["message_id"], 7);
     }
 }

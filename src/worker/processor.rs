@@ -319,7 +319,7 @@ impl Processor {
     }
 
     async fn deliver(&self, job: &Job, answer: &str) -> anyhow::Result<()> {
-        let chunks = split_message(answer, 4_000);
+        let chunks = split_message(answer, 4_096, 2);
         let start = usize::try_from(job.sent_chunks)
             .unwrap_or(0)
             .min(chunks.len());

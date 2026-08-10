@@ -156,7 +156,10 @@ struct ApiResponse<T> {
     description: Option<String>,
 }
 
-pub fn split_message(text: &str, max_chars: usize) -> Vec<String> {
+pub fn split_message(text: &str, max_chars: usize, max_chunks: usize) -> Vec<String> {
+    if max_chars == 0 || max_chunks == 0 {
+        return Vec::new();
+    }
     if text.chars().count() <= max_chars {
         return vec![text.to_owned()];
     }
@@ -181,6 +184,15 @@ pub fn split_message(text: &str, max_chars: usize) -> Vec<String> {
     if !rest.is_empty() {
         chunks.push(rest.to_owned());
     }
+    if chunks.len() > max_chunks {
+        chunks.truncate(max_chunks);
+        if let Some(last) = chunks.last_mut() {
+            if last.chars().count() >= max_chars {
+                last.pop();
+            }
+            last.push('…');
+        }
+    }
     chunks
 }
 
@@ -190,13 +202,20 @@ mod tests {
 
     #[test]
     fn splits_without_breaking_utf8() {
-        let chunks = split_message(&"日".repeat(9), 4);
+        let chunks = split_message(&"日".repeat(9), 4, 3);
         assert_eq!(chunks, vec!["日日日日", "日日日日", "日"]);
     }
 
     #[test]
     fn prefers_a_word_boundary() {
-        let chunks = split_message("alpha beta gamma", 11);
+        let chunks = split_message("alpha beta gamma", 11, 2);
         assert_eq!(chunks, vec!["alpha beta", "gamma"]);
+    }
+
+    #[test]
+    fn truncates_at_the_chunk_limit() {
+        let chunks = split_message(&"a".repeat(10), 4, 2);
+        assert_eq!(chunks, vec!["aaaa", "aaa…"]);
+        assert!(chunks.iter().all(|chunk| chunk.chars().count() <= 4));
     }
 }

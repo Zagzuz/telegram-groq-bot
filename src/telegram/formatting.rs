@@ -352,8 +352,27 @@ impl Renderer {
 
 fn sanitize_telegram_latex(latex: &str) -> String {
     let mut sanitized = latex.replace("\\boxed{", "{");
-    for command in ["\\displaystyle", "\\textstyle"] {
+    for command in [
+        "\\displaystyle",
+        "\\textstyle",
+        "\\Biggl",
+        "\\Biggr",
+        "\\biggl",
+        "\\biggr",
+        "\\Bigl",
+        "\\Bigr",
+        "\\bigl",
+        "\\bigr",
+        "\\Bigg",
+        "\\bigg",
+        "\\Big",
+        "\\big",
+        "\\!",
+    ] {
         sanitized = sanitized.replace(command, "");
+    }
+    for command in ["\\qquad", "\\quad", "\\,", "\\:", "\\;"] {
+        sanitized = sanitized.replace(command, " ");
     }
     sanitized
 }
@@ -435,7 +454,7 @@ mod tests {
             "Inline \\(\\int \\sin x\\,dx = -\\cos x + C\\) and block:\n\n\\[E = mc^2\\]",
         );
 
-        assert!(html.contains("<tg-math>\\int \\sin x\\,dx = -\\cos x + C</tg-math>"));
+        assert!(html.contains("<tg-math>\\int \\sin x dx = -\\cos x + C</tg-math>"));
         assert!(html.contains("<tg-math-block>E = mc^2</tg-math-block>"));
         assert!(!html.contains("\\("));
         assert!(!html.contains("\\["));
@@ -449,7 +468,7 @@ mod tests {
 
         assert!(html.contains("Substitute first.\n"));
         assert!(html.contains(
-            "<tg-math-block>\\int f(kx+c)\\,dx = \\frac{1}{k}\\int f(u)\\,du.</tg-math-block>"
+            "<tg-math-block>\\int f(kx+c) dx = \\frac{1}{k}\\int f(u) du.</tg-math-block>"
         ));
         assert!(!html.contains("&lt;br&gt;"));
     }
@@ -460,7 +479,7 @@ mod tests {
             "Integral | Result\n--- | ---\n$\\int \\tan x\\,dx$ | $-\\ln|\\cos x|+C$",
         );
 
-        assert!(html.contains("<tg-math>\\int \\tan x\\,dx</tg-math>"));
+        assert!(html.contains("<tg-math>\\int \\tan x dx</tg-math>"));
         assert!(html.contains("<tg-math>-\\ln|\\cos x|+C</tg-math>"));
     }
 
@@ -481,9 +500,7 @@ mod tests {
         );
 
         assert!(html.contains("2. Произведение (правило Лейбница)"));
-        assert!(html.contains(
-            "<tg-math>\\frac{d}{dx}\\bigl(u(x)v(x)\\bigr)=u'(x)v(x)+u(x)v'(x)</tg-math>"
-        ));
+        assert!(html.contains("<tg-math>\\frac{d}{dx}(u(x)v(x))=u'(x)v(x)+u(x)v'(x)</tg-math>"));
     }
 
     #[test]
@@ -504,11 +521,25 @@ mod tests {
             "то её производная находится так:\n\\boxed{\\displaystyle \\frac{dy}{dx}=f'\\!\\bigl(u(x)\\bigr)\\,u'(x)}.",
         );
 
-        assert!(html.contains(
-            "<tg-math-block>{ \\frac{dy}{dx}=f'\\!\\bigl(u(x)\\bigr)\\,u'(x)}.</tg-math-block>"
-        ));
+        assert!(html.contains("<tg-math-block>{ \\frac{dy}{dx}=f'(u(x)) u'(x)}.</tg-math-block>"));
         assert!(!html.contains("\\boxed"));
         assert!(!html.contains("\\displaystyle"));
-        assert!(html.contains("\\bigl"));
+        assert!(!html.contains("\\bigl"));
+        assert!(!html.contains("\\!"));
+        assert!(!html.contains("\\,"));
+    }
+
+    #[test]
+    fn simplifies_spacing_and_sized_delimiters_from_russian_chain_rule() {
+        let html = markdown_to_telegram_rich_html(
+            "Это правило дифференцирования составных функций. Её производную находят так:\n\\frac{d}{dx}\\,f\\bigl(u(x)\\bigr)=f'\\bigl(u(x)\\bigr)\\cdot u'(x).",
+        );
+
+        assert!(html.contains(
+            "<tg-math-block>\\frac{d}{dx} f(u(x))=f'(u(x))\\cdot u'(x).</tg-math-block>"
+        ));
+        assert!(!html.contains("\\bigl"));
+        assert!(!html.contains("\\bigr"));
+        assert!(!html.contains("\\,"));
     }
 }

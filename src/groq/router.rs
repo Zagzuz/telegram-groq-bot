@@ -32,6 +32,7 @@ struct Snapshot {
     remaining_requests: Option<i64>,
     limit_tokens: Option<i64>,
     remaining_tokens: Option<i64>,
+    tokens_reset_at: Option<tokio::time::Instant>,
     cooldown_until: Option<tokio::time::Instant>,
 }
 
@@ -102,6 +103,9 @@ impl ModelRouter {
         snapshot.remaining_requests = headers.remaining_requests.or(snapshot.remaining_requests);
         snapshot.limit_tokens = headers.limit_tokens.or(snapshot.limit_tokens);
         snapshot.remaining_tokens = headers.remaining_tokens.or(snapshot.remaining_tokens);
+        if let Some(reset_after) = headers.token_reset_after {
+            snapshot.tokens_reset_at = Some(tokio::time::Instant::now() + reset_after);
+        }
         if rate_limited {
             snapshot.cooldown_until = Some(
                 tokio::time::Instant::now()
@@ -156,10 +160,17 @@ impl ModelRouter {
             return Ok(false);
         }
 
-        if let (Some(limit), Some(remaining)) = (snapshot.limit_tokens, snapshot.remaining_tokens) {
-            let reserve = limit * i64::from(self.config.rate_reserve_percent) / 100;
-            if estimated_tokens > remaining.saturating_sub(reserve) {
-                return Ok(false);
+        let token_snapshot_is_current = snapshot
+            .tokens_reset_at
+            .is_none_or(|until| until > tokio::time::Instant::now());
+        if token_snapshot_is_current {
+            if let (Some(limit), Some(remaining)) =
+                (snapshot.limit_tokens, snapshot.remaining_tokens)
+            {
+                let reserve = limit * i64::from(self.config.rate_reserve_percent) / 100;
+                if estimated_tokens > remaining.saturating_sub(reserve) {
+                    return Ok(false);
+                }
             }
         }
 
@@ -181,7 +192,7 @@ pub fn estimate_tokens(messages: &[ChatMessage]) -> i64 {
         .map(|message| {
             let chars = i64::try_from(message.content.chars().count()).unwrap_or(i64::MAX);
             let bytes = i64::try_from(message.content.len()).unwrap_or(i64::MAX);
-            chars.max((bytes + 3) / 4) + 8
+            ((bytes + 2) / 3).max((chars + 2) / 3) + 8
         })
         .sum()
 }
@@ -198,5 +209,15 @@ mod tests {
             content: "日本語".repeat(10),
         }];
         assert!(estimate_tokens(&messages) >= 38);
+    }
+
+    #[test]
+    fn token_estimate_does_not_treat_each_ascii_character_as_a_token() {
+        let messages = vec![ChatMessage {
+            role: Role::User,
+            content: "a".repeat(300),
+        }];
+
+        assert_eq!(estimate_tokens(&messages), 108);
     }
 }

@@ -35,6 +35,7 @@ pub struct RateHeaders {
     pub limit_tokens: Option<i64>,
     pub remaining_tokens: Option<i64>,
     pub retry_after: Option<Duration>,
+    pub token_reset_after: Option<Duration>,
 }
 
 #[derive(Debug, Error)]
@@ -74,6 +75,7 @@ impl GroqClient {
                 messages,
                 max_completion_tokens,
                 temperature: 0.6,
+                reasoning_effort: model.starts_with("openai/gpt-oss-").then_some("low"),
             })
             .send()
             .await?;
@@ -121,6 +123,7 @@ impl RateHeaders {
             remaining_tokens: integer_header(headers, "x-ratelimit-remaining-tokens"),
             retry_after: duration_header(headers, "retry-after")
                 .or_else(|| duration_header(headers, "x-ratelimit-reset-tokens")),
+            token_reset_after: duration_header(headers, "x-ratelimit-reset-tokens"),
         }
     }
 }
@@ -187,6 +190,8 @@ struct CompletionRequest<'a> {
     messages: &'a [ChatMessage],
     max_completion_tokens: u32,
     temperature: f32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_effort: Option<&'static str>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -230,6 +235,10 @@ mod tests {
         let parsed = RateHeaders::from_headers(&headers);
 
         assert_eq!(parsed.retry_after, Some(Duration::from_millis(179_560)));
+        assert_eq!(
+            parsed.token_reset_after,
+            Some(Duration::from_millis(179_560))
+        );
     }
 
     #[test]
@@ -242,5 +251,29 @@ mod tests {
             StatusCode::PAYLOAD_TOO_LARGE,
             r#"{"error":{"code":"request_too_large"}}"#,
         ));
+    }
+
+    #[test]
+    fn enables_low_reasoning_only_for_gpt_oss() {
+        let gpt_oss = CompletionRequest {
+            model: "openai/gpt-oss-120b",
+            messages: &[],
+            max_completion_tokens: 1_200,
+            temperature: 0.6,
+            reasoning_effort: Some("low"),
+        };
+        let llama = CompletionRequest {
+            model: "llama-3.1-8b-instant",
+            messages: &[],
+            max_completion_tokens: 1_200,
+            temperature: 0.6,
+            reasoning_effort: None,
+        };
+
+        assert_eq!(
+            serde_json::to_value(gpt_oss).unwrap()["reasoning_effort"],
+            "low"
+        );
+        assert!(serde_json::to_value(llama).unwrap()["reasoning_effort"].is_null());
     }
 }

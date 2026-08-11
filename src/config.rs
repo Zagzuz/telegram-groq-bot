@@ -47,7 +47,7 @@ impl Config {
         }
 
         let primary_daily_switch_percent = optional("PRIMARY_DAILY_SWITCH_PERCENT", 80_u8)?;
-        let rate_reserve_percent = optional("RATE_RESERVE_PERCENT", 20_u8)?;
+        let rate_reserve_percent = optional("RATE_RESERVE_PERCENT", 10_u8)?;
         if primary_daily_switch_percent > 100 || rate_reserve_percent > 100 {
             bail!("percentage configuration values must be between 0 and 100");
         }
@@ -66,14 +66,14 @@ impl Config {
             auto_register_webhook: optional("AUTO_REGISTER_WEBHOOK", false)?,
             system_prompt: value_or(
                 "SYSTEM_PROMPT",
-                "You are a helpful assistant in a Telegram group. Answer clearly, accurately, and concisely. Format responses using GitHub-flavored Markdown supported by Telegram rich messages. Never use Markdown tables or HTML; use headings and lists instead. Wrap every mathematical expression, including variables, integrals, derivatives, substitutions, and equations, in LaTeX delimiters: $...$ inline or $$...$$ on its own line for display math. Do not emit raw Unicode math notation outside these delimiters. Keep the complete response under 7,800 characters and finish cleanly rather than ending mid-sentence. Use headings sparingly. Do not claim access to current information or tools that you do not have.",
+                "You are a helpful assistant in a Telegram group. Answer clearly, accurately, and concisely. Format responses using GitHub-flavored Markdown supported by Telegram rich messages. Never use Markdown tables or HTML; use headings and lists instead. Wrap every mathematical expression, including variables, integrals, derivatives, substitutions, and equations, in LaTeX delimiters: $...$ inline or $$...$$ on its own line for display math. Never split one LaTeX expression across source lines, and never emit a bare LaTeX command outside delimiters. Do not emit raw Unicode math notation outside these delimiters. Keep the complete response under 4,500 characters and finish cleanly rather than ending mid-sentence. Use headings sparingly. Do not claim access to current information or tools that you do not have.",
             ),
             port: optional("PORT", 8080_u16)?,
-            context_max_messages: optional("CONTEXT_MAX_MESSAGES", 12_i64)?,
-            context_max_chars: optional("CONTEXT_MAX_CHARS", 16_384_usize)?,
+            context_max_messages: optional("CONTEXT_MAX_MESSAGES", 6_i64)?,
+            context_max_chars: optional("CONTEXT_MAX_CHARS", 6_000_usize)?,
             context_retention_days: optional("CONTEXT_RETENTION_DAYS", 7_i64)?,
-            primary_answer_max_tokens: optional("PRIMARY_ANSWER_MAX_TOKENS", 2_400_u32)?,
-            fallback_answer_max_tokens: optional("FALLBACK_ANSWER_MAX_TOKENS", 2_400_u32)?,
+            primary_answer_max_tokens: optional("PRIMARY_ANSWER_MAX_TOKENS", 1_200_u32)?,
+            fallback_answer_max_tokens: optional("FALLBACK_ANSWER_MAX_TOKENS", 1_200_u32)?,
             primary_request_token_budget: optional("PRIMARY_REQUEST_TOKEN_BUDGET", 7_000_i64)?,
             fallback_request_token_budget: optional("FALLBACK_REQUEST_TOKEN_BUDGET", 5_800_i64)?,
             primary_daily_token_budget: optional("PRIMARY_DAILY_TOKEN_BUDGET", 200_000_i64)?,

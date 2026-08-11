@@ -23,21 +23,56 @@ fn normalize_model_markdown(markdown: &str) -> String {
         .replace("\\(", "$")
         .replace("\\)", "$");
 
-    normalized
-        .lines()
-        .map(|line| {
-            let trimmed = line.trim();
-            if trimmed.starts_with('\\')
-                && !trimmed.contains('$')
-                && contains_latex_command(trimmed)
-            {
-                format!("$${trimmed}$$")
-            } else {
-                line.to_owned()
+    normalize_bare_latex_lines(&normalized)
+}
+
+fn normalize_bare_latex_lines(markdown: &str) -> String {
+    let lines = markdown.lines().collect::<Vec<_>>();
+    let mut normalized = Vec::with_capacity(lines.len());
+    let mut index = 0;
+    let mut in_code_fence = false;
+
+    while index < lines.len() {
+        let line = lines[index];
+        let trimmed = trim_invisible_start(line.trim());
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            in_code_fence = !in_code_fence;
+            normalized.push(line.to_owned());
+            index += 1;
+            continue;
+        }
+
+        if !in_code_fence && is_bare_latex_start(trimmed) {
+            let mut expression = trimmed.to_owned();
+            while latex_needs_continuation(&expression) && index + 1 < lines.len() {
+                let continuation = trim_invisible_start(lines[index + 1].trim());
+                if continuation.is_empty() || continuation.contains('$') {
+                    break;
+                }
+                expression.push(' ');
+                expression.push_str(continuation);
+                index += 1;
             }
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+            normalized.push(format!("$${expression}$$"));
+        } else {
+            normalized.push(line.to_owned());
+        }
+        index += 1;
+    }
+
+    normalized.join("\n")
+}
+
+fn trim_invisible_start(text: &str) -> &str {
+    text.trim_start_matches(['\u{200b}', '\u{200c}', '\u{200d}', '\u{2060}', '\u{feff}'])
+}
+
+fn is_bare_latex_start(text: &str) -> bool {
+    text.starts_with('\\') && !text.contains('$') && contains_latex_command(text)
+}
+
+fn latex_needs_continuation(text: &str) -> bool {
+    text.matches("\\left").count() > text.matches("\\right").count()
 }
 
 fn contains_latex_command(text: &str) -> bool {
@@ -50,6 +85,10 @@ fn contains_latex_command(text: &str) -> bool {
         "\\lim",
         "\\partial",
         "\\begin",
+        "\\left",
+        "\\right",
+        "\\mathrm",
+        "\\text",
     ]
     .iter()
     .any(|command| text.contains(command))
@@ -300,5 +339,15 @@ mod tests {
 
         assert!(html.contains("<tg-math>\\int \\tan x\\,dx</tg-math>"));
         assert!(html.contains("<tg-math>-\\ln|\\cos x|+C</tg-math>"));
+    }
+
+    #[test]
+    fn converts_multiline_bare_latex_from_model_output() {
+        let html = markdown_to_telegram_rich_html(
+            "b) $${}$$ Split into fractions:\n\u{200b}\\frac{1}{x^{2}-a^{2}}=\\frac{1}{2a}\\left(\\frac{1}{x-a}-\\frac{1}{x+a}\n\\right).\n\ntherefore\n\n\\int\\frac{dx}{x^{2}-a^{2}}",
+        );
+
+        assert!(html.contains("<tg-math-block>\\frac{1}{x^{2}-a^{2}}=\\frac{1}{2a}\\left(\\frac{1}{x-a}-\\frac{1}{x+a} \\right).</tg-math-block>"));
+        assert!(html.contains("<tg-math-block>\\int\\frac{dx}{x^{2}-a^{2}}</tg-math-block>"));
     }
 }

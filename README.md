@@ -32,12 +32,14 @@ The Groq router uses response rate-limit headers and one daily aggregate row per
 
 If both models lack capacity, the job is deferred. The service does not rotate API keys. When a chat disables automatic switching, a primary-model rate limit defers its work instead of changing models.
 
+When a chat changes models, the first answer from the new model starts with a visible `previous → current` notification. The first answer ever generated for a chat does not announce a switch.
+
 ## Minimal persistence
 
 PostgreSQL stores:
 
 - At most `CONTEXT_MAX_MESSAGES` messages per chat, additionally capped by `CONTEXT_MAX_CHARS` and `CONTEXT_RETENTION_DAYS`.
-- A single Boolean switching setting only for chats that change it.
+- The switching setting and last-used model ID for each active chat.
 - Pending jobs; completed job data is deleted immediately after delivery.
 - Telegram update IDs without message bodies for 48 hours.
 - One token-usage aggregate per model per UTC day, retained for two days.

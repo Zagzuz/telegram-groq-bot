@@ -203,7 +203,8 @@ impl Processor {
             Err(error) => return Err(error.into()),
         };
 
-        self.database
+        let switched_from = self
+            .database
             .save_generated_answer(GeneratedAnswer {
                 job,
                 question,
@@ -216,6 +217,14 @@ impl Processor {
                 retention_days: self.config.context_retention_days,
             })
             .await?;
+        if let Some(previous_model) = switched_from {
+            tracing::info!(
+                update_id = job.update_id,
+                previous_model,
+                model = used_choice.model,
+                "chat model switched"
+            );
+        }
         Ok(true)
     }
 
@@ -363,7 +372,7 @@ impl Processor {
 
     fn privacy_text(&self) -> String {
         format!(
-            "The bot stores only this chat's most recent {} user/assistant messages, capped at {} characters and {} days. It does not retain usernames or raw Telegram updates. Completed jobs are deleted, and update IDs expire after 48 hours. Use /reset to clear this chat's context immediately.",
+            "The bot stores only this chat's most recent {} user/assistant messages, capped at {} characters and {} days, plus its automatic-switch setting and last model ID. It does not retain usernames or raw Telegram updates. Completed jobs are deleted, and update IDs expire after 48 hours. Use /reset to clear this chat's context immediately.",
             self.config.context_max_messages,
             self.config.context_max_chars,
             self.config.context_retention_days

@@ -164,7 +164,7 @@ impl Database {
     pub async fn save_generated_answer(
         &self,
         generated: GeneratedAnswer<'_>,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<Option<String>> {
         let GeneratedAnswer {
             job,
             question,
@@ -177,6 +177,26 @@ impl Database {
             retention_days,
         } = generated;
         let mut tx = self.pool.begin().await?;
+        let previous_model = sqlx::query_scalar::<_, Option<String>>(
+            "SELECT last_model FROM chat_settings WHERE chat_id = $1 FOR UPDATE",
+        )
+        .bind(job.chat_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .flatten();
+        let switched_from = previous_model.filter(|previous| previous != model);
+        let delivery_answer = answer_with_model_switch(answer, switched_from.as_deref(), model);
+
+        sqlx::query(
+            "INSERT INTO chat_settings (chat_id, last_model) VALUES ($1, $2) \
+             ON CONFLICT (chat_id) DO UPDATE \
+             SET last_model = EXCLUDED.last_model, updated_at = NOW()",
+        )
+        .bind(job.chat_id)
+        .bind(model)
+        .execute(&mut *tx)
+        .await?;
+
         sqlx::query(
             "INSERT INTO messages (chat_id, role, content) \
              VALUES ($1, 'user', $2), ($1, 'assistant', $3)",
@@ -208,7 +228,7 @@ impl Database {
              WHERE update_id = $1",
         )
         .bind(job.update_id)
-        .bind(answer)
+        .bind(&delivery_answer)
         .bind(model)
         .execute(&mut *tx)
         .await?;
@@ -245,7 +265,7 @@ impl Database {
         .await?;
 
         tx.commit().await?;
-        Ok(())
+        Ok(switched_from)
     }
 
     pub async fn save_local_answer(&self, update_id: i64, answer: &str) -> anyhow::Result<()> {
@@ -396,4 +416,34 @@ impl Database {
 
 fn truncate(value: &str, max_chars: usize) -> String {
     value.chars().take(max_chars).collect()
+}
+
+fn answer_with_model_switch(answer: &str, previous_model: Option<&str>, model: &str) -> String {
+    let Some(previous_model) = previous_model else {
+        return answer.to_owned();
+    };
+    let previous_model = previous_model.replace('`', "ˋ");
+    let model = model.replace('`', "ˋ");
+    format!("🔄 **Model switched:** `{previous_model}` → `{model}`\n\n{answer}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::answer_with_model_switch;
+
+    #[test]
+    fn leaves_first_answer_without_a_switch_notice() {
+        assert_eq!(
+            answer_with_model_switch("Answer", None, "primary"),
+            "Answer"
+        );
+    }
+
+    #[test]
+    fn prepends_switch_notice_to_answer() {
+        assert_eq!(
+            answer_with_model_switch("Answer", Some("primary"), "fallback"),
+            "🔄 **Model switched:** `primary` → `fallback`\n\nAnswer"
+        );
+    }
 }

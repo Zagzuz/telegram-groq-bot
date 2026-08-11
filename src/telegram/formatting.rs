@@ -23,7 +23,82 @@ fn normalize_model_markdown(markdown: &str) -> String {
         .replace("\\(", "$")
         .replace("\\)", "$");
 
+    let normalized = normalize_markdown_tables(&normalized);
     normalize_bare_latex_lines(&normalized)
+}
+
+fn normalize_markdown_tables(markdown: &str) -> String {
+    let lines = markdown.lines().collect::<Vec<_>>();
+    let mut normalized = Vec::with_capacity(lines.len());
+    let mut index = 0;
+
+    while index < lines.len() {
+        if index + 1 < lines.len() {
+            let header = split_table_cells(lines[index]);
+            let separator = split_table_cells(lines[index + 1]);
+            if header.len() >= 2
+                && header.len() == separator.len()
+                && separator.iter().all(|cell| is_table_separator(cell))
+            {
+                normalized.push(format!("**{}**", header.join(" → ")));
+                index += 2;
+                while index < lines.len() {
+                    let cells = split_table_cells(lines[index]);
+                    if cells.len() != header.len() {
+                        break;
+                    }
+                    normalized.push(format!("- {}", cells.join(" → ")));
+                    index += 1;
+                }
+                normalized.push(String::new());
+                continue;
+            }
+        }
+
+        normalized.push(lines[index].to_owned());
+        index += 1;
+    }
+
+    normalized.join("\n")
+}
+
+fn split_table_cells(line: &str) -> Vec<String> {
+    let trimmed = line.trim();
+    if !trimmed.contains('|') {
+        return Vec::new();
+    }
+
+    let mut cells = Vec::new();
+    let mut current = String::new();
+    let mut characters = trimmed.chars().peekable();
+    let mut in_math = false;
+    while let Some(character) = characters.next() {
+        if character == '$' {
+            current.push(character);
+            while characters.peek() == Some(&'$') {
+                current.push(characters.next().expect("peeked dollar must exist"));
+            }
+            in_math = !in_math;
+        } else if character == '|' && !in_math {
+            let cell = current.trim();
+            if !cell.is_empty() {
+                cells.push(cell.to_owned());
+            }
+            current.clear();
+        } else {
+            current.push(character);
+        }
+    }
+    let cell = current.trim();
+    if !cell.is_empty() {
+        cells.push(cell.to_owned());
+    }
+    cells
+}
+
+fn is_table_separator(cell: &str) -> bool {
+    cell.chars().filter(|character| *character == '-').count() >= 3
+        && cell.chars().all(|character| matches!(character, '-' | ':'))
 }
 
 fn normalize_bare_latex_lines(markdown: &str) -> String {
@@ -54,6 +129,8 @@ fn normalize_bare_latex_lines(markdown: &str) -> String {
                 index += 1;
             }
             normalized.push(format!("$${expression}$$"));
+        } else if !in_code_fence {
+            normalized.push(wrap_embedded_bare_latex(line));
         } else {
             normalized.push(line.to_owned());
         }
@@ -69,6 +146,42 @@ fn trim_invisible_start(text: &str) -> &str {
 
 fn is_bare_latex_start(text: &str) -> bool {
     text.starts_with('\\') && !text.contains('$') && contains_latex_command(text)
+}
+
+fn wrap_embedded_bare_latex(line: &str) -> String {
+    let Some(start) = find_bare_latex_command(line) else {
+        return line.to_owned();
+    };
+    if line[..start].trim().is_empty() {
+        return line.to_owned();
+    }
+
+    let prefix = line[..start].trim_end();
+    let expression = line[start..].trim();
+    format!("{prefix} ${expression}$")
+}
+
+fn find_bare_latex_command(text: &str) -> Option<usize> {
+    let mut in_math = false;
+    let mut in_code = false;
+    let mut iterator = text.char_indices().peekable();
+
+    while let Some((index, character)) = iterator.next() {
+        match character {
+            '`' if !in_math => in_code = !in_code,
+            '$' if !in_code => {
+                while iterator.peek().is_some_and(|(_, next)| *next == '$') {
+                    iterator.next();
+                }
+                in_math = !in_math;
+            }
+            '\\' if !in_math && !in_code && contains_latex_command(&text[index..]) => {
+                return Some(index);
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 fn latex_needs_continuation(text: &str) -> bool {
@@ -349,5 +462,29 @@ mod tests {
 
         assert!(html.contains("<tg-math-block>\\frac{1}{x^{2}-a^{2}}=\\frac{1}{2a}\\left(\\frac{1}{x-a}-\\frac{1}{x+a} \\right).</tg-math-block>"));
         assert!(html.contains("<tg-math-block>\\int\\frac{dx}{x^{2}-a^{2}}</tg-math-block>"));
+    }
+
+    #[test]
+    fn converts_bare_latex_after_russian_prose() {
+        let html = markdown_to_telegram_rich_html(
+            "2. Произведение (правило Лейбница) \\frac{d}{dx}\\bigl(u(x)v(x)\\bigr)=u'(x)v(x)+u(x)v'(x)",
+        );
+
+        assert!(html.contains("2. Произведение (правило Лейбница)"));
+        assert!(html.contains(
+            "<tg-math>\\frac{d}{dx}\\bigl(u(x)v(x)\\bigr)=u'(x)v(x)+u(x)v'(x)</tg-math>"
+        ));
+    }
+
+    #[test]
+    fn converts_markdown_math_table_to_bullet_rows() {
+        let html = markdown_to_telegram_rich_html(
+            "4. Производные\n\n| Функция | Производная |\n| --- | --- |\n| $c$ | $0$ |\n| $x^n$ | $n x^{n-1}$ |",
+        );
+
+        assert!(html.contains("<b>Функция → Производная</b>"));
+        assert!(html.contains("• <tg-math>c</tg-math> → <tg-math>0</tg-math>"));
+        assert!(html.contains("• <tg-math>x^n</tg-math> → <tg-math>n x^{n-1}</tg-math>"));
+        assert!(!html.contains(" | "));
     }
 }

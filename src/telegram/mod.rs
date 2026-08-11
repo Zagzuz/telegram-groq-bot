@@ -1,6 +1,7 @@
 mod client;
 mod commands;
 mod formatting;
+mod math;
 mod types;
 
 pub use client::{TelegramClient, split_message};

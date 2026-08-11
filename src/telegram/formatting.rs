@@ -1,5 +1,7 @@
 use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
 
+use super::math::{normalize_model_math, sanitize_for_telegram};
+
 pub fn markdown_to_telegram_rich_html(markdown: &str) -> String {
     let normalized = normalize_model_markdown(markdown);
     let mut options = Options::all();
@@ -17,14 +19,10 @@ fn normalize_model_markdown(markdown: &str) -> String {
     let normalized = markdown
         .replace("<br />", "\n")
         .replace("<br/>", "\n")
-        .replace("<br>", "\n")
-        .replace("\\[", "$$")
-        .replace("\\]", "$$")
-        .replace("\\(", "$")
-        .replace("\\)", "$");
+        .replace("<br>", "\n");
 
-    let normalized = normalize_markdown_tables(&normalized);
-    normalize_bare_latex_lines(&normalized)
+    let normalized = normalize_model_math(&normalized);
+    normalize_markdown_tables(&normalized)
 }
 
 fn normalize_markdown_tables(markdown: &str) -> String {
@@ -101,114 +99,6 @@ fn is_table_separator(cell: &str) -> bool {
         && cell.chars().all(|character| matches!(character, '-' | ':'))
 }
 
-fn normalize_bare_latex_lines(markdown: &str) -> String {
-    let lines = markdown.lines().collect::<Vec<_>>();
-    let mut normalized = Vec::with_capacity(lines.len());
-    let mut index = 0;
-    let mut in_code_fence = false;
-
-    while index < lines.len() {
-        let line = lines[index];
-        let trimmed = trim_invisible_start(line.trim());
-        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
-            in_code_fence = !in_code_fence;
-            normalized.push(line.to_owned());
-            index += 1;
-            continue;
-        }
-
-        if !in_code_fence && is_bare_latex_start(trimmed) {
-            let mut expression = trimmed.to_owned();
-            while latex_needs_continuation(&expression) && index + 1 < lines.len() {
-                let continuation = trim_invisible_start(lines[index + 1].trim());
-                if continuation.is_empty() || continuation.contains('$') {
-                    break;
-                }
-                expression.push(' ');
-                expression.push_str(continuation);
-                index += 1;
-            }
-            normalized.push(format!("$${expression}$$"));
-        } else if !in_code_fence {
-            normalized.push(wrap_embedded_bare_latex(line));
-        } else {
-            normalized.push(line.to_owned());
-        }
-        index += 1;
-    }
-
-    normalized.join("\n")
-}
-
-fn trim_invisible_start(text: &str) -> &str {
-    text.trim_start_matches(['\u{200b}', '\u{200c}', '\u{200d}', '\u{2060}', '\u{feff}'])
-}
-
-fn is_bare_latex_start(text: &str) -> bool {
-    text.starts_with('\\') && !text.contains('$') && contains_latex_command(text)
-}
-
-fn wrap_embedded_bare_latex(line: &str) -> String {
-    let Some(start) = find_bare_latex_command(line) else {
-        return line.to_owned();
-    };
-    if line[..start].trim().is_empty() {
-        return line.to_owned();
-    }
-
-    let prefix = line[..start].trim_end();
-    let expression = line[start..].trim();
-    format!("{prefix} ${expression}$")
-}
-
-fn find_bare_latex_command(text: &str) -> Option<usize> {
-    let mut in_math = false;
-    let mut in_code = false;
-    let mut iterator = text.char_indices().peekable();
-
-    while let Some((index, character)) = iterator.next() {
-        match character {
-            '`' if !in_math => in_code = !in_code,
-            '$' if !in_code => {
-                while iterator.peek().is_some_and(|(_, next)| *next == '$') {
-                    iterator.next();
-                }
-                in_math = !in_math;
-            }
-            '\\' if !in_math && !in_code && contains_latex_command(&text[index..]) => {
-                return Some(index);
-            }
-            _ => {}
-        }
-    }
-    None
-}
-
-fn latex_needs_continuation(text: &str) -> bool {
-    text.matches("\\left").count() > text.matches("\\right").count()
-}
-
-fn contains_latex_command(text: &str) -> bool {
-    [
-        "\\int",
-        "\\frac",
-        "\\sum",
-        "\\prod",
-        "\\sqrt",
-        "\\lim",
-        "\\partial",
-        "\\begin",
-        "\\left",
-        "\\right",
-        "\\mathrm",
-        "\\text",
-        "\\boxed",
-        "\\displaystyle",
-    ]
-    .iter()
-    .any(|command| text.contains(command))
-}
-
 #[derive(Default)]
 struct Renderer {
     output: String,
@@ -234,12 +124,12 @@ impl Renderer {
             }
             Event::InlineMath(math) => {
                 self.output.push_str("<tg-math>");
-                push_escaped_text(&mut self.output, &sanitize_telegram_latex(&math));
+                push_escaped_text(&mut self.output, &sanitize_for_telegram(&math));
                 self.output.push_str("</tg-math>");
             }
             Event::DisplayMath(math) => {
                 self.output.push_str("<tg-math-block>");
-                push_escaped_text(&mut self.output, &sanitize_telegram_latex(&math));
+                push_escaped_text(&mut self.output, &sanitize_for_telegram(&math));
                 self.output.push_str("</tg-math-block>");
             }
             Event::Html(html) | Event::InlineHtml(html) => {
@@ -350,33 +240,6 @@ impl Renderer {
     }
 }
 
-fn sanitize_telegram_latex(latex: &str) -> String {
-    let mut sanitized = latex.replace("\\boxed{", "{");
-    for command in [
-        "\\displaystyle",
-        "\\textstyle",
-        "\\Biggl",
-        "\\Biggr",
-        "\\biggl",
-        "\\biggr",
-        "\\Bigl",
-        "\\Bigr",
-        "\\bigl",
-        "\\bigr",
-        "\\Bigg",
-        "\\bigg",
-        "\\Big",
-        "\\big",
-        "\\!",
-    ] {
-        sanitized = sanitized.replace(command, "");
-    }
-    for command in ["\\qquad", "\\quad", "\\,", "\\:", "\\;"] {
-        sanitized = sanitized.replace(command, " ");
-    }
-    sanitized
-}
-
 fn push_escaped_text(output: &mut String, text: &str) {
     for character in text.chars() {
         match character {
@@ -449,6 +312,13 @@ mod tests {
     }
 
     #[test]
+    fn converts_model_latex_fence_to_telegram_math_block() {
+        let html = markdown_to_telegram_rich_html("```latex\n\\frac{a}{b}\n```");
+
+        assert_eq!(html, "<tg-math-block>\\frac{a}{b}</tg-math-block>");
+    }
+
+    #[test]
     fn converts_backslash_latex_delimiters_to_native_telegram_math() {
         let html = markdown_to_telegram_rich_html(
             "Inline \\(\\int \\sin x\\,dx = -\\cos x + C\\) and block:\n\n\\[E = mc^2\\]",
@@ -489,7 +359,7 @@ mod tests {
             "b) $${}$$ Split into fractions:\n\u{200b}\\frac{1}{x^{2}-a^{2}}=\\frac{1}{2a}\\left(\\frac{1}{x-a}-\\frac{1}{x+a}\n\\right).\n\ntherefore\n\n\\int\\frac{dx}{x^{2}-a^{2}}",
         );
 
-        assert!(html.contains("<tg-math-block>\\frac{1}{x^{2}-a^{2}}=\\frac{1}{2a}\\left(\\frac{1}{x-a}-\\frac{1}{x+a} \\right).</tg-math-block>"));
+        assert!(html.contains("<tg-math-block>\\frac{1}{x^{2}-a^{2}}=\\frac{1}{2a}(\\frac{1}{x-a}-\\frac{1}{x+a} ).</tg-math-block>"));
         assert!(html.contains("<tg-math-block>\\int\\frac{dx}{x^{2}-a^{2}}</tg-math-block>"));
     }
 

@@ -127,16 +127,16 @@ docker run --rm --env-file .env -p 8080:8080 telegram-groq-bot
 
 The image runs as an unprivileged user and embeds migrations in the binary. `serve` applies migrations before accepting requests.
 
-## Free deployment: Koyeb and Neon
+## Free deployment: Northflank and Neon
 
 1. Create a Neon project and copy its pooled PostgreSQL connection URL.
-2. Create a Koyeb Web Service from this repository using the `Dockerfile`.
-3. Configure port `8080` and health path `/healthz`.
+2. Create a Northflank combined service from this repository and build it with the root `Dockerfile`.
+3. Expose public HTTP port `8080` and configure `/healthz` as the readiness path.
 4. Add the required environment variables, using the Neon URL for `DATABASE_URL`.
-5. Set `PUBLIC_BASE_URL` to the Koyeb HTTPS URL and `AUTO_REGISTER_WEBHOOK=true`.
+5. Set `PUBLIC_BASE_URL` to the Northflank `code.run` HTTPS URL and `AUTO_REGISTER_WEBHOOK=true`.
 6. Deploy, check `/readyz`, and run `/model` in Telegram.
 
-Use a Neon region close to Koyeb. Koyeb's free instance has ephemeral local storage, so PostgreSQL must remain external. The service tolerates restarts because pending work and chat context are durable.
+Use a Neon region close to Northflank. The service uses ephemeral local storage, so PostgreSQL must remain external. The service tolerates restarts because pending work and chat context are durable.
 
 ## Operational notes
 
@@ -145,6 +145,6 @@ Use a Neon region close to Koyeb. Koyeb's free instance has ephemeral local stor
 - Replies are limited to two Telegram messages and split on UTF-8-safe boundaries. Oversized model output is truncated with an ellipsis. Per-chunk progress is saved so a transient failure resumes instead of resending the entire answer.
 - Groq's GitHub-style Markdown is converted server-side to Telegram Rich HTML before delivery, including headings, lists, links, quotations, code blocks, and native inline or display LaTeX formulas.
 - When model capacity requires a retry, the bot sends one immediate queue notice with the next-attempt estimate. A single boolean on the pending job prevents repeated notices and is deleted with the completed job.
-- The keep-alive workflow requests `/healthz` every ten minutes so Render's free instance remains available while queued work is pending. GitHub automatically disables scheduled workflows in public repositories after 60 days without repository activity.
+- The health-check workflow requests the deployed Northflank `/healthz` endpoint every ten minutes. GitHub automatically disables scheduled workflows in public repositories after 60 days without repository activity.
 - Queue, model selection, Groq latency, deferral, Telegram delivery, and completion events are emitted as structured logs without message contents.
 - A crash after Telegram accepts a chunk but before its progress update commits can still duplicate that chunk; Telegram does not accept an idempotency key for `sendRichMessage`.

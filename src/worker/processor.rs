@@ -57,6 +57,13 @@ impl Processor {
             return Ok(false);
         };
 
+        tracing::info!(
+            update_id = job.update_id,
+            kind = job.kind,
+            attempt = job.attempts,
+            "job claimed"
+        );
+
         if let Err(error) = self.process(&job).await {
             tracing::warn!(
                 update_id = job.update_id,
@@ -143,10 +150,18 @@ impl Processor {
         {
             RouteDecision::Use(choice) => choice,
             RouteDecision::Wait(delay) => {
-                self.database.defer_job(job.update_id, delay).await?;
+                self.defer_with_notice(job, delay, "configured model capacity unavailable")
+                    .await?;
                 return Ok(false);
             }
         };
+
+        tracing::info!(
+            update_id = job.update_id,
+            model = choice.model,
+            fallback = choice.is_fallback,
+            "model selected"
+        );
 
         let (completion, used_choice) = match self.request(&choice, &messages).await {
             Ok(completion) => (completion, choice),
@@ -162,19 +177,26 @@ impl Processor {
                                     let delay =
                                         headers.retry_after.unwrap_or(Duration::from_secs(10));
                                     self.router.observe(&fallback.model, &headers, true).await;
-                                    self.database.defer_job(job.update_id, delay).await?;
+                                    self.defer_with_notice(job, delay, "fallback model rate limit")
+                                        .await?;
                                     return Ok(false);
                                 }
                                 Err(error) => return Err(error.into()),
                             }
                         }
                         RouteDecision::Wait(delay) => {
-                            self.database.defer_job(job.update_id, delay).await?;
+                            self.defer_with_notice(
+                                job,
+                                delay,
+                                "fallback model capacity unavailable",
+                            )
+                            .await?;
                             return Ok(false);
                         }
                     }
                 } else {
-                    self.database.defer_job(job.update_id, retry_after).await?;
+                    self.defer_with_notice(job, retry_after, "primary model rate limit")
+                        .await?;
                     return Ok(false);
                 }
             }
@@ -202,6 +224,7 @@ impl Processor {
         choice: &ModelChoice,
         messages: &[crate::groq::ChatMessage],
     ) -> Result<Completion, GroqError> {
+        let started = std::time::Instant::now();
         let result = self
             .groq
             .complete(&choice.model, messages, choice.max_completion_tokens)
@@ -211,7 +234,43 @@ impl Processor {
                 .observe(&choice.model, &completion.rate_headers, false)
                 .await;
         }
+        let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        match &result {
+            Ok(_) => tracing::info!(model = choice.model, elapsed_ms, "Groq request completed"),
+            Err(error) => tracing::warn!(
+                model = choice.model,
+                elapsed_ms,
+                %error,
+                "Groq request failed"
+            ),
+        }
         result
+    }
+
+    async fn defer_with_notice(
+        &self,
+        job: &Job,
+        delay: Duration,
+        reason: &'static str,
+    ) -> anyhow::Result<()> {
+        if !job.wait_notified {
+            let notice = format!(
+                "⏳ Groq is temporarily at capacity. Your question is queued. The next attempt will be in about {}.",
+                describe_delay(delay)
+            );
+            self.telegram
+                .send_message(job.chat_id, job.thread_id, Some(job.message_id), &notice)
+                .await?;
+            self.database.mark_wait_notified(job.update_id).await?;
+        }
+
+        tracing::warn!(
+            update_id = job.update_id,
+            delay_seconds = delay.as_secs(),
+            reason,
+            "job deferred"
+        );
+        self.database.defer_job(job.update_id, delay).await
     }
 
     async fn handle_auto_model(&self, job: &Job) -> anyhow::Result<()> {
@@ -324,6 +383,7 @@ impl Processor {
             .unwrap_or(0)
             .min(chunks.len());
         for (index, chunk) in chunks.iter().enumerate().skip(start) {
+            let started = std::time::Instant::now();
             self.telegram
                 .send_message(
                     job.chat_id,
@@ -332,14 +392,47 @@ impl Processor {
                     chunk,
                 )
                 .await?;
+            tracing::info!(
+                update_id = job.update_id,
+                chunk = index + 1,
+                elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                "Telegram reply chunk delivered"
+            );
             self.database
                 .mark_chunk_sent(job.update_id, i32::try_from(index + 1).unwrap_or(i32::MAX))
                 .await?;
         }
-        self.database.complete_job(job.update_id).await
+        self.database.complete_job(job.update_id).await?;
+        tracing::info!(update_id = job.update_id, "job completed");
+        Ok(())
+    }
+}
+
+fn describe_delay(delay: Duration) -> String {
+    let seconds = delay.as_secs().max(1);
+    if seconds < 60 {
+        format!("{seconds} seconds")
+    } else if seconds < 3_600 {
+        let minutes = seconds.div_ceil(60);
+        format!("{minutes} minute{}", if minutes == 1 { "" } else { "s" })
+    } else {
+        let hours = seconds.div_ceil(3_600);
+        format!("{hours} hour{}", if hours == 1 { "" } else { "s" })
     }
 }
 
 fn help_text() -> &'static str {
     "Commands:\n/ask <question> — ask using this chat's context\n/automodel [on|off|toggle] — view or change adaptive model switching\n/model — show model settings\n/reset — clear this chat's context\n/privacy — show stored-data policy\n\nYou can also mention the bot or reply to one of its messages."
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn describes_retry_delays_for_users() {
+        assert_eq!(describe_delay(Duration::from_secs(10)), "10 seconds");
+        assert_eq!(describe_delay(Duration::from_secs(60)), "1 minute");
+        assert_eq!(describe_delay(Duration::from_secs(3_601)), "2 hours");
+    }
 }

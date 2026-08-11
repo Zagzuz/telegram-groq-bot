@@ -129,7 +129,7 @@ impl Database {
              WHERE j.update_id = c.update_id \
              RETURNING j.update_id, j.chat_id, j.chat_kind, j.actor_user_id, \
                        j.message_id, j.thread_id, j.kind, j.input, j.answer, \
-                       j.sent_chunks, j.attempts",
+                       j.sent_chunks, j.wait_notified, j.attempts",
         )
         .bind(lease_seconds)
         .bind(max_attempts)
@@ -273,6 +273,16 @@ impl Database {
             .bind(sent_chunks)
             .execute(&self.pool)
             .await?;
+        Ok(())
+    }
+
+    pub async fn mark_wait_notified(&self, update_id: i64) -> anyhow::Result<()> {
+        sqlx::query(
+            "UPDATE jobs SET wait_notified = TRUE, updated_at = NOW() WHERE update_id = $1",
+        )
+        .bind(update_id)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 

@@ -60,12 +60,18 @@ async fn webhook(
     };
     match state.database.enqueue(&item).await {
         Ok(inserted) => {
-            tracing::debug!(
-                update_id = item.update_id,
-                chat_id = item.chat_id,
-                inserted,
-                "Telegram update accepted"
-            );
+            if inserted {
+                tracing::info!(
+                    update_id = item.update_id,
+                    kind = item.kind.as_str(),
+                    "Telegram job queued"
+                );
+            } else {
+                tracing::debug!(
+                    update_id = item.update_id,
+                    "duplicate Telegram update ignored"
+                );
+            }
             StatusCode::OK
         }
         Err(error) => {

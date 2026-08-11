@@ -59,6 +59,7 @@ pub struct Job {
     pub input: Option<String>,
     pub answer: Option<String>,
     pub sent_chunks: i32,
+    pub wait_notified: bool,
     pub attempts: i32,
 }
 

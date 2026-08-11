@@ -1,8 +1,10 @@
 use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
 
 pub fn markdown_to_telegram_rich_html(markdown: &str) -> String {
-    let normalized = normalize_latex_delimiters(markdown);
-    let parser = Parser::new_ext(&normalized, Options::all());
+    let normalized = normalize_model_markdown(markdown);
+    let mut options = Options::all();
+    options.remove(Options::ENABLE_TABLES);
+    let parser = Parser::new_ext(&normalized, options);
     let mut renderer = Renderer::default();
 
     for event in parser {
@@ -11,12 +13,46 @@ pub fn markdown_to_telegram_rich_html(markdown: &str) -> String {
     renderer.finish()
 }
 
-fn normalize_latex_delimiters(markdown: &str) -> String {
-    markdown
+fn normalize_model_markdown(markdown: &str) -> String {
+    let normalized = markdown
+        .replace("<br />", "\n")
+        .replace("<br/>", "\n")
+        .replace("<br>", "\n")
         .replace("\\[", "$$")
         .replace("\\]", "$$")
         .replace("\\(", "$")
-        .replace("\\)", "$")
+        .replace("\\)", "$");
+
+    normalized
+        .lines()
+        .map(|line| {
+            let trimmed = line.trim();
+            if trimmed.starts_with('\\')
+                && !trimmed.contains('$')
+                && contains_latex_command(trimmed)
+            {
+                format!("$${trimmed}$$")
+            } else {
+                line.to_owned()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn contains_latex_command(text: &str) -> bool {
+    [
+        "\\int",
+        "\\frac",
+        "\\sum",
+        "\\prod",
+        "\\sqrt",
+        "\\lim",
+        "\\partial",
+        "\\begin",
+    ]
+    .iter()
+    .any(|command| text.contains(command))
 }
 
 #[derive(Default)]
@@ -241,5 +277,28 @@ mod tests {
         assert!(html.contains("<tg-math-block>E = mc^2</tg-math-block>"));
         assert!(!html.contains("\\("));
         assert!(!html.contains("\\["));
+    }
+
+    #[test]
+    fn converts_bare_latex_line_and_html_breaks() {
+        let html = markdown_to_telegram_rich_html(
+            "Substitute first.<br>\\int f(kx+c)\\,dx = \\frac{1}{k}\\int f(u)\\,du.",
+        );
+
+        assert!(html.contains("Substitute first.\n"));
+        assert!(html.contains(
+            "<tg-math-block>\\int f(kx+c)\\,dx = \\frac{1}{k}\\int f(u)\\,du.</tg-math-block>"
+        ));
+        assert!(!html.contains("&lt;br&gt;"));
+    }
+
+    #[test]
+    fn preserves_absolute_values_in_markdown_table_text() {
+        let html = markdown_to_telegram_rich_html(
+            "Integral | Result\n--- | ---\n$\\int \\tan x\\,dx$ | $-\\ln|\\cos x|+C$",
+        );
+
+        assert!(html.contains("<tg-math>\\int \\tan x\\,dx</tg-math>"));
+        assert!(html.contains("<tg-math>-\\ln|\\cos x|+C</tg-math>"));
     }
 }

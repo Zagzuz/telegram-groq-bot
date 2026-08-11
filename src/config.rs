@@ -64,7 +64,7 @@ impl Config {
             auto_register_webhook: optional("AUTO_REGISTER_WEBHOOK", false)?,
             system_prompt: value_or(
                 "SYSTEM_PROMPT",
-                "You are a helpful assistant in a Telegram group. Answer clearly, accurately, and concisely. Format responses using GitHub-flavored Markdown supported by Telegram rich messages. Write inline formulas as $LaTeX$ and display formulas as $$LaTeX$$. Keep the complete response under 7,800 characters and finish cleanly rather than ending mid-sentence or mid-table. Use headings sparingly. Do not claim access to current information or tools that you do not have.",
+                "You are a helpful assistant in a Telegram group. Answer clearly, accurately, and concisely. Format responses using GitHub-flavored Markdown supported by Telegram rich messages. Never use Markdown tables or HTML; use headings and lists instead. Wrap every mathematical expression, including variables, integrals, derivatives, substitutions, and equations, in LaTeX delimiters: $...$ inline or $$...$$ on its own line for display math. Do not emit raw Unicode math notation outside these delimiters. Keep the complete response under 7,800 characters and finish cleanly rather than ending mid-sentence. Use headings sparingly. Do not claim access to current information or tools that you do not have.",
             ),
             port: optional("PORT", 8080_u16)?,
             context_max_messages: optional("CONTEXT_MAX_MESSAGES", 12_i64)?,

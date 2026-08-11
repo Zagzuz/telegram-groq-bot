@@ -388,6 +388,12 @@ impl Processor {
 
     async fn deliver(&self, job: &Job, answer: &str) -> anyhow::Result<()> {
         let chunks = split_message(answer, 4_096, 2);
+        tracing::info!(
+            update_id = job.update_id,
+            answer_chars = answer.chars().count(),
+            chunks_total = chunks.len(),
+            "Telegram reply prepared"
+        );
         let start = usize::try_from(job.sent_chunks)
             .unwrap_or(0)
             .min(chunks.len());

@@ -80,14 +80,14 @@ impl GroqClient {
 
         let status = response.status();
         let rate_headers = RateHeaders::from_headers(response.headers());
-        if status == StatusCode::TOO_MANY_REQUESTS {
-            return Err(GroqError::RateLimited(rate_headers));
-        }
         if !status.is_success() {
             let message = response
                 .text()
                 .await
                 .unwrap_or_else(|_| "unreadable response".into());
+            if is_rate_limit_response(status, &message) {
+                return Err(GroqError::RateLimited(rate_headers));
+            }
             return Err(GroqError::Api {
                 status,
                 message: message.chars().take(500).collect(),
@@ -119,15 +119,66 @@ impl RateHeaders {
             remaining_requests: integer_header(headers, "x-ratelimit-remaining-requests"),
             limit_tokens: integer_header(headers, "x-ratelimit-limit-tokens"),
             remaining_tokens: integer_header(headers, "x-ratelimit-remaining-tokens"),
-            retry_after: integer_header(headers, "retry-after")
-                .and_then(|seconds| u64::try_from(seconds).ok())
-                .map(Duration::from_secs),
+            retry_after: duration_header(headers, "retry-after")
+                .or_else(|| duration_header(headers, "x-ratelimit-reset-tokens")),
         }
     }
 }
 
+fn is_rate_limit_response(status: StatusCode, message: &str) -> bool {
+    status == StatusCode::TOO_MANY_REQUESTS
+        || (status == StatusCode::PAYLOAD_TOO_LARGE && message.contains("rate_limit_exceeded"))
+}
+
 fn integer_header(headers: &HeaderMap, name: &str) -> Option<i64> {
     headers.get(name)?.to_str().ok()?.parse().ok()
+}
+
+fn duration_header(headers: &HeaderMap, name: &str) -> Option<Duration> {
+    parse_duration(headers.get(name)?.to_str().ok()?)
+}
+
+fn parse_duration(value: &str) -> Option<Duration> {
+    if let Ok(seconds) = value.parse::<f64>() {
+        return duration_from_seconds(seconds);
+    }
+
+    let mut total_seconds = 0.0_f64;
+    let mut rest = value.trim();
+    while !rest.is_empty() {
+        let number_end = rest
+            .find(|character: char| !character.is_ascii_digit() && character != '.')
+            .unwrap_or(rest.len());
+        if number_end == 0 {
+            return None;
+        }
+        let amount = rest[..number_end].parse::<f64>().ok()?;
+        rest = &rest[number_end..];
+
+        let unit_end = rest
+            .find(|character: char| !character.is_ascii_alphabetic())
+            .unwrap_or(rest.len());
+        if unit_end == 0 {
+            return None;
+        }
+        let multiplier = match &rest[..unit_end] {
+            "ms" => 0.001,
+            "s" => 1.0,
+            "m" => 60.0,
+            "h" => 3_600.0,
+            _ => return None,
+        };
+        total_seconds += amount * multiplier;
+        rest = &rest[unit_end..];
+    }
+    duration_from_seconds(total_seconds)
+}
+
+fn duration_from_seconds(seconds: f64) -> Option<Duration> {
+    if !seconds.is_finite() || seconds < 0.0 {
+        return None;
+    }
+    Some(Duration::from_secs_f64(seconds.max(0.001)))
 }
 
 #[derive(Debug, Serialize)]
@@ -161,4 +212,35 @@ struct Usage {
     prompt_tokens: i64,
     #[serde(default)]
     completion_tokens: i64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use reqwest::header::{HeaderMap, HeaderValue};
+
+    #[test]
+    fn uses_token_reset_when_retry_after_is_absent() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-ratelimit-reset-tokens",
+            HeaderValue::from_static("2m59.56s"),
+        );
+
+        let parsed = RateHeaders::from_headers(&headers);
+
+        assert_eq!(parsed.retry_after, Some(Duration::from_millis(179_560)));
+    }
+
+    #[test]
+    fn recognizes_payload_too_large_rate_limit_errors() {
+        assert!(is_rate_limit_response(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            r#"{"error":{"code":"rate_limit_exceeded"}}"#,
+        ));
+        assert!(!is_rate_limit_response(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            r#"{"error":{"code":"request_too_large"}}"#,
+        ));
+    }
 }

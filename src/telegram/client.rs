@@ -228,6 +228,14 @@ mod tests {
     }
 
     #[test]
+    fn uses_two_chunks_for_a_long_telegram_reply() {
+        let chunks = split_message(&"a".repeat(5_000), 4_096, 2);
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].chars().count(), 4_096);
+        assert_eq!(chunks[1].chars().count(), 904);
+    }
+
+    #[test]
     fn serializes_rich_html_delivery() {
         let request = SendRichMessageRequest {
             chat_id: 42,

@@ -1,13 +1,22 @@
 use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
 
 pub fn markdown_to_telegram_rich_html(markdown: &str) -> String {
-    let parser = Parser::new_ext(markdown, Options::all());
+    let normalized = normalize_latex_delimiters(markdown);
+    let parser = Parser::new_ext(&normalized, Options::all());
     let mut renderer = Renderer::default();
 
     for event in parser {
         renderer.render(event);
     }
     renderer.finish()
+}
+
+fn normalize_latex_delimiters(markdown: &str) -> String {
+    markdown
+        .replace("\\[", "$$")
+        .replace("\\]", "$$")
+        .replace("\\(", "$")
+        .replace("\\)", "$")
 }
 
 #[derive(Default)]
@@ -220,5 +229,17 @@ mod tests {
 
         assert!(html.contains("<tg-math>x^2 + y^2</tg-math>"));
         assert!(html.contains("<tg-math-block>E = mc^2</tg-math-block>"));
+    }
+
+    #[test]
+    fn converts_backslash_latex_delimiters_to_native_telegram_math() {
+        let html = markdown_to_telegram_rich_html(
+            "Inline \\(\\int \\sin x\\,dx = -\\cos x + C\\) and block:\n\n\\[E = mc^2\\]",
+        );
+
+        assert!(html.contains("<tg-math>\\int \\sin x\\,dx = -\\cos x + C</tg-math>"));
+        assert!(html.contains("<tg-math-block>E = mc^2</tg-math-block>"));
+        assert!(!html.contains("\\("));
+        assert!(!html.contains("\\["));
     }
 }

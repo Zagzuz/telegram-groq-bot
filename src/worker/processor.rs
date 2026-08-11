@@ -77,6 +77,24 @@ impl Processor {
                     update_id = job.update_id,
                     "discarding job after maximum attempts"
                 );
+                if job.answer.is_none() && job.sent_chunks == 0 {
+                    if let Err(notify_error) = self
+                        .telegram
+                        .send_message(
+                            job.chat_id,
+                            job.thread_id,
+                            Some(job.message_id),
+                            "⚠️ I couldn't answer this question after several attempts. Please try again. If it keeps failing, use /reset to clear this chat's saved context.",
+                        )
+                        .await
+                    {
+                        tracing::warn!(
+                            update_id = job.update_id,
+                            %notify_error,
+                            "final failure notice could not be delivered"
+                        );
+                    }
+                }
                 self.database.complete_job(job.update_id).await?;
             } else {
                 let delay = Duration::from_secs(
@@ -135,7 +153,7 @@ impl Processor {
                 self.config.context_retention_days,
             )
             .await?;
-        let messages = build_context(
+        let mut messages = build_context(
             &self.config.system_prompt,
             &history,
             question,
@@ -155,6 +173,9 @@ impl Processor {
                 return Ok(false);
             }
         };
+        let mut choice = choice;
+        let token_budget = request_token_budget(&self.config, &choice);
+        fit_request_to_budget(&mut messages, &mut choice, token_budget)?;
 
         tracing::info!(
             update_id = job.update_id,
@@ -171,6 +192,9 @@ impl Processor {
                 if auto_switch && !choice.is_fallback {
                     match self.router.choose_fallback(estimated_prompt_tokens).await? {
                         RouteDecision::Use(fallback) => {
+                            let mut fallback = fallback;
+                            let token_budget = request_token_budget(&self.config, &fallback);
+                            fit_request_to_budget(&mut messages, &mut fallback, token_budget)?;
                             match self.request(&fallback, &messages).await {
                                 Ok(completion) => (completion, fallback),
                                 Err(GroqError::RateLimited(headers)) => {
@@ -423,6 +447,39 @@ impl Processor {
     }
 }
 
+fn request_token_budget(config: &Config, choice: &ModelChoice) -> i64 {
+    if choice.is_fallback {
+        config.fallback_request_token_budget
+    } else {
+        config.primary_request_token_budget
+    }
+}
+
+fn fit_request_to_budget(
+    messages: &mut Vec<crate::groq::ChatMessage>,
+    choice: &mut ModelChoice,
+    token_budget: i64,
+) -> anyhow::Result<()> {
+    while messages.len() > 2
+        && estimate_tokens(messages) + i64::from(choice.max_completion_tokens) > token_budget
+    {
+        messages.remove(1);
+    }
+
+    let prompt_tokens = estimate_tokens(messages);
+    let available_completion_tokens = token_budget.saturating_sub(prompt_tokens);
+    if available_completion_tokens < 128 {
+        anyhow::bail!(
+            "question is too large for the configured model request budget; shorten it or use /reset"
+        );
+    }
+
+    choice.max_completion_tokens = choice
+        .max_completion_tokens
+        .min(u32::try_from(available_completion_tokens).unwrap_or(u32::MAX));
+    Ok(())
+}
+
 fn describe_delay(delay: Duration) -> String {
     let seconds = delay.as_secs().max(1);
     if seconds < 60 {
@@ -449,5 +506,40 @@ mod tests {
         assert_eq!(describe_delay(Duration::from_secs(10)), "10 seconds");
         assert_eq!(describe_delay(Duration::from_secs(60)), "1 minute");
         assert_eq!(describe_delay(Duration::from_secs(3_601)), "2 hours");
+    }
+
+    #[test]
+    fn removes_old_context_and_caps_completion_to_fit_request_budget() {
+        use crate::{domain::Role, groq::ChatMessage};
+
+        let mut messages = vec![
+            ChatMessage {
+                role: Role::System,
+                content: "system".into(),
+            },
+            ChatMessage {
+                role: Role::User,
+                content: "old context".repeat(200),
+            },
+            ChatMessage {
+                role: Role::Assistant,
+                content: "old answer".repeat(200),
+            },
+            ChatMessage {
+                role: Role::User,
+                content: "new question".into(),
+            },
+        ];
+        let mut choice = ModelChoice {
+            model: "fallback".into(),
+            max_completion_tokens: 2_400,
+            is_fallback: true,
+        };
+
+        fit_request_to_budget(&mut messages, &mut choice, 500).unwrap();
+
+        assert_eq!(messages.len(), 2);
+        assert!(estimate_tokens(&messages) + i64::from(choice.max_completion_tokens) <= 500);
+        assert!(choice.max_completion_tokens < 2_400);
     }
 }

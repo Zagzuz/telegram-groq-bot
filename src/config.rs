@@ -20,6 +20,8 @@ pub struct Config {
     pub context_retention_days: i64,
     pub primary_answer_max_tokens: u32,
     pub fallback_answer_max_tokens: u32,
+    pub primary_request_token_budget: i64,
+    pub fallback_request_token_budget: i64,
     pub primary_daily_token_budget: i64,
     pub fallback_daily_token_budget: i64,
     pub primary_daily_request_budget: i64,
@@ -72,6 +74,8 @@ impl Config {
             context_retention_days: optional("CONTEXT_RETENTION_DAYS", 7_i64)?,
             primary_answer_max_tokens: optional("PRIMARY_ANSWER_MAX_TOKENS", 2_400_u32)?,
             fallback_answer_max_tokens: optional("FALLBACK_ANSWER_MAX_TOKENS", 2_400_u32)?,
+            primary_request_token_budget: optional("PRIMARY_REQUEST_TOKEN_BUDGET", 7_000_i64)?,
+            fallback_request_token_budget: optional("FALLBACK_REQUEST_TOKEN_BUDGET", 5_800_i64)?,
             primary_daily_token_budget: optional("PRIMARY_DAILY_TOKEN_BUDGET", 200_000_i64)?,
             fallback_daily_token_budget: optional("FALLBACK_DAILY_TOKEN_BUDGET", 500_000_i64)?,
             primary_daily_request_budget: optional("PRIMARY_DAILY_REQUEST_BUDGET", 1_000_i64)?,
@@ -101,6 +105,9 @@ impl Config {
         }
         if self.primary_answer_max_tokens == 0 || self.fallback_answer_max_tokens == 0 {
             bail!("answer token limits must be greater than zero");
+        }
+        if self.primary_request_token_budget <= 128 || self.fallback_request_token_budget <= 128 {
+            bail!("request token budgets must be greater than 128");
         }
         if self.primary_daily_token_budget <= 0
             || self.fallback_daily_token_budget <= 0

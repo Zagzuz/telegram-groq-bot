@@ -1,6 +1,6 @@
 use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
 
-pub fn markdown_to_telegram_html(markdown: &str) -> String {
+pub fn markdown_to_telegram_rich_html(markdown: &str) -> String {
     let parser = Parser::new_ext(markdown, Options::all());
     let mut renderer = Renderer::default();
 
@@ -33,10 +33,15 @@ impl Renderer {
                 push_escaped_text(&mut self.output, &code);
                 self.output.push_str("</code>");
             }
-            Event::InlineMath(math) | Event::DisplayMath(math) => {
-                self.output.push_str("<code>");
+            Event::InlineMath(math) => {
+                self.output.push_str("<tg-math>");
                 push_escaped_text(&mut self.output, &math);
-                self.output.push_str("</code>");
+                self.output.push_str("</tg-math>");
+            }
+            Event::DisplayMath(math) => {
+                self.output.push_str("<tg-math-block>");
+                push_escaped_text(&mut self.output, &math);
+                self.output.push_str("</tg-math-block>");
             }
             Event::Html(html) | Event::InlineHtml(html) => {
                 push_escaped_text(&mut self.output, &html);
@@ -183,7 +188,7 @@ mod tests {
     #[test]
     fn converts_common_markdown_to_telegram_html() {
         let markdown = "# Title\n\n**bold** and *italic* with `code`.\n\n- one\n- two";
-        let html = markdown_to_telegram_html(markdown);
+        let html = markdown_to_telegram_rich_html(markdown);
         assert!(html.contains("<b>Title</b>"));
         assert!(html.contains("<b>bold</b>"));
         assert!(html.contains("<i>italic</i>"));
@@ -193,7 +198,7 @@ mod tests {
 
     #[test]
     fn escapes_model_html_and_code() {
-        let html = markdown_to_telegram_html("Use `<tag>` & never <script>alert(1)</script>.");
+        let html = markdown_to_telegram_rich_html("Use `<tag>` & never <script>alert(1)</script>.");
         assert!(html.contains("<code>&lt;tag&gt;</code>"));
         assert!(html.contains("&lt;script&gt;"));
         assert!(!html.contains("<script>"));
@@ -201,10 +206,19 @@ mod tests {
 
     #[test]
     fn keeps_only_safe_link_schemes() {
-        let html =
-            markdown_to_telegram_html("[safe](https://example.com) [unsafe](javascript:alert(1))");
+        let html = markdown_to_telegram_rich_html(
+            "[safe](https://example.com) [unsafe](javascript:alert(1))",
+        );
         assert!(html.contains("<a href=\"https://example.com\">safe</a>"));
         assert!(!html.contains("javascript:"));
         assert!(html.contains("unsafe"));
+    }
+
+    #[test]
+    fn converts_latex_to_native_telegram_math() {
+        let html = markdown_to_telegram_rich_html("Inline $x^2 + y^2$ and block:\n\n$$E = mc^2$$");
+
+        assert!(html.contains("<tg-math>x^2 + y^2</tg-math>"));
+        assert!(html.contains("<tg-math-block>E = mc^2</tg-math-block>"));
     }
 }

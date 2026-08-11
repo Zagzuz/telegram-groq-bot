@@ -141,5 +141,5 @@ Use a Neon region close to Koyeb. Koyeb's free instance has ephemeral local stor
 - Groq and Telegram secrets are read only from environment variables and are not logged.
 - Replies are plain text, avoiding Telegram parse-mode injection and escaping failures.
 - Replies are limited to two Telegram messages and split on UTF-8-safe boundaries. Oversized model output is truncated with an ellipsis. Per-chunk progress is saved so a transient failure resumes instead of resending the entire answer.
-- Groq's GitHub-style Markdown is converted server-side to Telegram-safe HTML before delivery, including headings, lists, links, quotations, inline code, and fenced code blocks.
-- A crash after Telegram accepts a chunk but before its progress update commits can still duplicate that chunk; Telegram does not accept an idempotency key for `sendMessage`.
+- Groq's GitHub-style Markdown is converted server-side to Telegram Rich HTML before delivery, including headings, lists, links, quotations, code blocks, and native inline or display LaTeX formulas.
+- A crash after Telegram accepts a chunk but before its progress update commits can still duplicate that chunk; Telegram does not accept an idempotency key for `sendRichMessage`.

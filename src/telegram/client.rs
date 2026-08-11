@@ -2,7 +2,7 @@ use anyhow::{Context, bail};
 use reqwest::Url;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
-use super::formatting::markdown_to_telegram_html;
+use super::formatting::markdown_to_telegram_rich_html;
 
 #[derive(Clone)]
 pub struct TelegramClient {
@@ -54,15 +54,14 @@ impl TelegramClient {
         reply_to_message_id: Option<i64>,
         text: &str,
     ) -> anyhow::Result<()> {
-        let formatted = markdown_to_telegram_html(text);
-        let request = SendMessageRequest {
+        let formatted = markdown_to_telegram_rich_html(text);
+        let request = SendRichMessageRequest {
             chat_id,
             message_thread_id: thread_id,
-            text: &formatted,
-            parse_mode: "HTML",
+            rich_message: InputRichMessage { html: &formatted },
             reply_parameters: reply_to_message_id.map(|message_id| ReplyParameters { message_id }),
         };
-        let _: serde_json::Value = self.post("sendMessage", &request).await?;
+        let _: serde_json::Value = self.post("sendRichMessage", &request).await?;
         Ok(())
     }
 
@@ -134,14 +133,18 @@ struct SetWebhookRequest<'a> {
 }
 
 #[derive(Debug, Serialize)]
-struct SendMessageRequest<'a> {
+struct SendRichMessageRequest<'a> {
     chat_id: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     message_thread_id: Option<i64>,
-    text: &'a str,
-    parse_mode: &'a str,
+    rich_message: InputRichMessage<'a>,
     #[serde(skip_serializing_if = "Option::is_none")]
     reply_parameters: Option<ReplyParameters>,
+}
+
+#[derive(Debug, Serialize)]
+struct InputRichMessage<'a> {
+    html: &'a str,
 }
 
 #[derive(Debug, Serialize)]
@@ -225,17 +228,20 @@ mod tests {
     }
 
     #[test]
-    fn serializes_html_delivery() {
-        let request = SendMessageRequest {
+    fn serializes_rich_html_delivery() {
+        let request = SendRichMessageRequest {
             chat_id: 42,
             message_thread_id: None,
-            text: "<b>bold</b>",
-            parse_mode: "HTML",
+            rich_message: InputRichMessage {
+                html: "<b>bold</b> and <tg-math>x^2</tg-math>",
+            },
             reply_parameters: Some(ReplyParameters { message_id: 7 }),
         };
         let value = serde_json::to_value(request).unwrap();
-        assert_eq!(value["text"], "<b>bold</b>");
-        assert_eq!(value["parse_mode"], "HTML");
+        assert_eq!(
+            value["rich_message"]["html"],
+            "<b>bold</b> and <tg-math>x^2</tg-math>"
+        );
         assert_eq!(value["reply_parameters"]["message_id"], 7);
     }
 }

@@ -202,6 +202,8 @@ fn contains_latex_command(text: &str) -> bool {
         "\\right",
         "\\mathrm",
         "\\text",
+        "\\boxed",
+        "\\displaystyle",
     ]
     .iter()
     .any(|command| text.contains(command))
@@ -232,12 +234,12 @@ impl Renderer {
             }
             Event::InlineMath(math) => {
                 self.output.push_str("<tg-math>");
-                push_escaped_text(&mut self.output, &math);
+                push_escaped_text(&mut self.output, &sanitize_telegram_latex(&math));
                 self.output.push_str("</tg-math>");
             }
             Event::DisplayMath(math) => {
                 self.output.push_str("<tg-math-block>");
-                push_escaped_text(&mut self.output, &math);
+                push_escaped_text(&mut self.output, &sanitize_telegram_latex(&math));
                 self.output.push_str("</tg-math-block>");
             }
             Event::Html(html) | Event::InlineHtml(html) => {
@@ -346,6 +348,14 @@ impl Renderer {
         }
         self.output.trim().to_owned()
     }
+}
+
+fn sanitize_telegram_latex(latex: &str) -> String {
+    let mut sanitized = latex.replace("\\boxed{", "{");
+    for command in ["\\displaystyle", "\\textstyle"] {
+        sanitized = sanitized.replace(command, "");
+    }
+    sanitized
 }
 
 fn push_escaped_text(output: &mut String, text: &str) {
@@ -486,5 +496,19 @@ mod tests {
         assert!(html.contains("• <tg-math>c</tg-math> → <tg-math>0</tg-math>"));
         assert!(html.contains("• <tg-math>x^n</tg-math> → <tg-math>n x^{n-1}</tg-math>"));
         assert!(!html.contains(" | "));
+    }
+
+    #[test]
+    fn simplifies_decorative_latex_from_russian_chain_rule() {
+        let html = markdown_to_telegram_rich_html(
+            "то её производная находится так:\n\\boxed{\\displaystyle \\frac{dy}{dx}=f'\\!\\bigl(u(x)\\bigr)\\,u'(x)}.",
+        );
+
+        assert!(html.contains(
+            "<tg-math-block>{ \\frac{dy}{dx}=f'\\!\\bigl(u(x)\\bigr)\\,u'(x)}.</tg-math-block>"
+        ));
+        assert!(!html.contains("\\boxed"));
+        assert!(!html.contains("\\displaystyle"));
+        assert!(html.contains("\\bigl"));
     }
 }

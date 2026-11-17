@@ -23,6 +23,8 @@ In groups and supergroups, `/automodel` changes and `/reset` require a chat admi
 
 Telegram webhooks are validated and reduced to a minimal durable job before the endpoint returns `200`. A Tokio worker processes queued jobs, with only one in-flight job allowed per chat. Telegram `update_id` values provide deduplication.
 
+The worker does not poll while it is idle. A successful enqueue wakes it in-process, so a new Telegram message is still claimed immediately. With nothing ready to run, it sleeps until the next `available_at` or `lease_until`, and never longer than `WORKER_IDLE_TIMEOUT_SECONDS` (default 15 minutes). That fallback also covers a missed wake. The idle gap is long enough for Neon to suspend compute. Hourly retention cleanup runs only on those wakeups, when the database is already being contacted, and does not keep its own timer.
+
 The Groq router uses response rate-limit headers and one daily aggregate row per model. It chooses the fallback when:
 
 - Estimated primary usage reaches `PRIMARY_DAILY_SWITCH_PERCENT` of its daily token budget.
@@ -79,8 +81,8 @@ cargo run -- delete-webhook
 
 Endpoints:
 
-- `GET /healthz` — process liveness.
-- `GET /readyz` — PostgreSQL readiness.
+- `GET /healthz` — process liveness. Does not touch PostgreSQL. Use this for platform readiness and uptime checks.
+- `GET /readyz` — PostgreSQL readiness. Runs `SELECT 1`, so a periodic probe would keep Neon compute awake.
 - `POST /telegram/webhook` — Telegram webhook receiver.
 
 ## Configuration
@@ -117,8 +119,12 @@ Important optional values:
 | `FALLBACK_DAILY_REQUEST_BUDGET` | `14400` |
 | `PRIMARY_DAILY_SWITCH_PERCENT` | `80` |
 | `RATE_RESERVE_PERCENT` | `10` |
+| `WORKER_POLL_MILLISECONDS` | `500` |
+| `WORKER_IDLE_TIMEOUT_SECONDS` | `900` |
 
 Set `AUTO_REGISTER_WEBHOOK=true` only after `PUBLIC_BASE_URL` points to the deployed HTTPS service. Registration is idempotent and occurs during startup.
+
+`WORKER_POLL_MILLISECONDS` is only the delay after a failed worker iteration. It is not an idle polling interval. `WORKER_IDLE_TIMEOUT_SECONDS` is the longest the worker waits when nothing is queued; keep it at or above five minutes on Neon. Webhook deliveries and scheduled job times wake the worker earlier.
 
 ## Docker
 
@@ -133,7 +139,7 @@ The image runs as an unprivileged user and embeds migrations in the binary. `ser
 
 1. Create a Neon project and copy its pooled PostgreSQL connection URL.
 2. Create a Northflank combined service from this repository and build it with the root `Dockerfile`.
-3. Expose public HTTP port `8080` and configure `/healthz` as the readiness path.
+3. Expose public HTTP port `8080` and configure `/healthz` as the readiness path. Do not probe `/readyz` on a timer; that endpoint queries Postgres and would stop Neon from suspending.
 4. Add the required environment variables, using the Neon URL for `DATABASE_URL`.
 5. Set `PUBLIC_BASE_URL` to the Northflank `code.run` HTTPS URL and `AUTO_REGISTER_WEBHOOK=true`.
 6. Deploy, check `/readyz`, and run `/model` in Telegram.
@@ -147,6 +153,8 @@ Use a Neon region close to Northflank. The service uses ephemeral local storage,
 - Replies are limited to two Telegram messages and split on UTF-8-safe boundaries. Oversized model output is truncated with an ellipsis. Per-chunk progress is saved so a transient failure resumes instead of resending the entire answer.
 - Groq's GitHub-style Markdown is converted server-side to Telegram Rich HTML before delivery, including headings, lists, links, quotations, code blocks, and native inline or display LaTeX formulas using either `$...$` / `$$...$$` or `\\(...\\)` / `\\[...\\]` delimiters.
 - When model capacity requires a retry, the bot sends one immediate queue notice with the next-attempt estimate. A single boolean on the pending job prevents repeated notices and is deleted with the completed job.
-- The health-check workflow requests the deployed Northflank `/healthz` endpoint every ten minutes. GitHub automatically disables scheduled workflows in public repositories after 60 days without repository activity.
+- The health-check workflow requests the deployed Northflank `/healthz` endpoint every ten minutes and does not query Postgres. GitHub automatically disables scheduled workflows in public repositories after 60 days without repository activity.
+- The connection pool keeps no minimum of idle sessions and closes a connection after it has been idle for one minute, before Neon’s five-minute suspend. The pool reaper does not send health-check queries. A connection is validated only when it is checked out for real work.
+- While the bot is idle, Postgres is queried at the earlier of the next retry or lease expiry and the idle fallback (default 15 minutes). That gap is what allows Neon to scale to zero between messages.
 - Queue, model selection, Groq latency, deferral, Telegram delivery, and completion events are emitted as structured logs without message contents.
 - A crash after Telegram accepts a chunk but before its progress update commits can still duplicate that chunk; Telegram does not accept an idempotency key for `sendRichMessage`.

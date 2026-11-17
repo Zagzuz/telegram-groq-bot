@@ -36,12 +36,25 @@ impl DailyUsage {
     }
 }
 
+/// Drop idle sessions well before Neon suspends compute (5 minutes with no
+/// queries). sqlx reaps on `min(idle_timeout, max_lifetime)` and only closes
+/// expired idle connections; it does not ping, and `min_connections = 0`
+/// stops it from opening a replacement. A one-minute idle timeout keeps that
+/// teardown inside the window the last real query already made active.
+/// `test_before_acquire` sends a protocol Sync only when a connection is
+/// checked out for real work, not on a timer.
+const POOL_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+const POOL_MAX_LIFETIME: Duration = Duration::from_secs(30 * 60);
+
 impl Database {
     pub async fn connect(url: &str) -> anyhow::Result<Self> {
         let pool = PgPoolOptions::new()
             .max_connections(5)
             .min_connections(0)
             .acquire_timeout(Duration::from_secs(10))
+            .idle_timeout(POOL_IDLE_TIMEOUT)
+            .max_lifetime(POOL_MAX_LIFETIME)
+            .test_before_acquire(true)
             .connect(url)
             .await
             .context("failed to connect to PostgreSQL")?;
@@ -136,6 +149,32 @@ impl Database {
         .fetch_optional(&self.pool)
         .await?;
         Ok(job)
+    }
+
+    /// Delay until the earliest future retry (`available_at`) or in-flight
+    /// lease (`lease_until`). `None` means nothing is scheduled, so the worker
+    /// can sleep until a webhook or the idle fallback.
+    ///
+    /// The delta uses the database clock. Pending rows that are already due
+    /// are omitted: `claim_job` either takes them or they are blocked until a
+    /// same-chat lease, which is included here, expires.
+    pub async fn next_job_delay(&self) -> anyhow::Result<Option<Duration>> {
+        let seconds = sqlx::query_scalar::<_, Option<f64>>(
+            "SELECT EXTRACT(EPOCH FROM (MIN(resume_at) - NOW()))::float8 \
+             FROM ( \
+                 SELECT available_at AS resume_at \
+                 FROM jobs \
+                 WHERE status = 'pending' AND available_at > NOW() \
+                 UNION ALL \
+                 SELECT lease_until AS resume_at \
+                 FROM jobs \
+                 WHERE status = 'processing' AND lease_until > NOW() \
+             ) AS upcoming",
+        )
+        .fetch_one(&self.pool)
+        .await
+        .context("failed to read the next scheduled job")?;
+        Ok(seconds.map(duration_from_db_seconds))
     }
 
     pub async fn load_context(
@@ -414,6 +453,14 @@ impl Database {
     }
 }
 
+fn duration_from_db_seconds(seconds: f64) -> Duration {
+    const MAX_SECONDS: f64 = 60.0 * 60.0 * 24.0 * 365.0;
+    if !seconds.is_finite() || seconds <= 0.0 {
+        return Duration::ZERO;
+    }
+    Duration::from_secs_f64(seconds.min(MAX_SECONDS))
+}
+
 fn truncate(value: &str, max_chars: usize) -> String {
     value.chars().take(max_chars).collect()
 }
@@ -429,7 +476,9 @@ fn answer_with_model_switch(answer: &str, previous_model: Option<&str>, model: &
 
 #[cfg(test)]
 mod tests {
-    use super::answer_with_model_switch;
+    use std::time::Duration;
+
+    use super::{answer_with_model_switch, duration_from_db_seconds};
 
     #[test]
     fn leaves_first_answer_without_a_switch_notice() {
@@ -444,6 +493,18 @@ mod tests {
         assert_eq!(
             answer_with_model_switch("Answer", Some("primary"), "fallback"),
             "🔄 **Model switched:** `primary` → `fallback`\n\nAnswer"
+        );
+    }
+
+    #[test]
+    fn scheduled_delay_rejects_non_positive_database_deltas() {
+        assert_eq!(duration_from_db_seconds(0.0), Duration::ZERO);
+        assert_eq!(duration_from_db_seconds(-2.5), Duration::ZERO);
+        assert_eq!(duration_from_db_seconds(f64::NAN), Duration::ZERO);
+        assert_eq!(duration_from_db_seconds(f64::INFINITY), Duration::ZERO);
+        assert_eq!(
+            duration_from_db_seconds(12.5),
+            Duration::from_secs_f64(12.5)
         );
     }
 }

@@ -29,6 +29,9 @@ pub struct Config {
     pub primary_daily_switch_percent: u8,
     pub rate_reserve_percent: u8,
     pub worker_poll_milliseconds: u64,
+    /// Longest an idle worker waits before rechecking the queue. Webhook
+    /// enqueues and scheduled retries wake it sooner.
+    pub worker_idle_timeout_seconds: u64,
     pub job_lease_seconds: i64,
     pub max_job_attempts: i32,
 }
@@ -83,6 +86,7 @@ impl Config {
             primary_daily_switch_percent,
             rate_reserve_percent,
             worker_poll_milliseconds: optional("WORKER_POLL_MILLISECONDS", 500_u64)?,
+            worker_idle_timeout_seconds: optional("WORKER_IDLE_TIMEOUT_SECONDS", 900_u64)?,
             job_lease_seconds: optional("JOB_LEASE_SECONDS", 120_i64)?,
             max_job_attempts: optional("MAX_JOB_ATTEMPTS", 8_i32)?,
         };
@@ -117,6 +121,7 @@ impl Config {
             bail!("daily model budgets must be greater than zero");
         }
         if self.worker_poll_milliseconds == 0
+            || self.worker_idle_timeout_seconds == 0
             || self.job_lease_seconds <= 0
             || self.max_job_attempts <= 0
         {

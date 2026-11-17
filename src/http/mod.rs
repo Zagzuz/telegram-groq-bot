@@ -13,12 +13,14 @@ use crate::{
     config::Config,
     persistence::Database,
     telegram::{Update, extract_work_item},
+    worker::WorkerWake,
 };
 
 #[derive(Clone)]
 pub struct HttpState {
     pub config: Arc<Config>,
     pub database: Database,
+    pub worker_wake: WorkerWake,
 }
 
 pub fn router(state: HttpState) -> Router {
@@ -61,6 +63,9 @@ async fn webhook(
     match state.database.enqueue(&item).await {
         Ok(inserted) => {
             if inserted {
+                // The enqueue transaction is already committed. Waking after
+                // that lets the worker claim the row instead of polling.
+                state.worker_wake.wake();
                 tracing::info!(
                     update_id = item.update_id,
                     kind = item.kind.as_str(),

@@ -8,7 +8,7 @@ use crate::{
     http::{HttpState, router},
     persistence::Database,
     telegram::TelegramClient,
-    worker::{self, Processor},
+    worker::{self, Processor, WorkerWake},
 };
 
 pub async fn serve(config: Config) -> anyhow::Result<()> {
@@ -38,9 +38,11 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
         model_router,
     );
 
+    let worker_wake = WorkerWake::new();
     let app = router(HttpState {
         config: config.clone(),
         database,
+        worker_wake: worker_wake.clone(),
     });
     let address = SocketAddr::from(([0, 0, 0, 0], config.port));
     let listener = tokio::net::TcpListener::bind(address)
@@ -48,7 +50,7 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
         .with_context(|| format!("failed to bind to {address}"))?;
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-    let worker_handle = tokio::spawn(worker::run(processor, shutdown_rx));
+    let worker_handle = tokio::spawn(worker::run(processor, worker_wake, shutdown_rx));
     tracing::info!(%address, "service started");
 
     let server_result = axum::serve(listener, app)

@@ -44,6 +44,14 @@ impl Processor {
         Duration::from_millis(self.config.worker_poll_milliseconds)
     }
 
+    pub fn idle_timeout(&self) -> Duration {
+        Duration::from_secs(self.config.worker_idle_timeout_seconds)
+    }
+
+    pub async fn next_resume_in(&self) -> anyhow::Result<Option<Duration>> {
+        self.database.next_job_delay().await
+    }
+
     pub async fn cleanup(&self) -> anyhow::Result<()> {
         self.database.cleanup().await
     }
